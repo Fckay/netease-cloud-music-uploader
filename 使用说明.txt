@@ -1,0 +1,11 @@
+1.先到后端目录安装nodejs
+2.执行命令安装后端程序
+cd NeteaseCloudMusicApi
+npm install
+3.运行后端程序
+node app.js
+4.获取app的cookie写入到cookies.txt
+注意:程序支持扫码登录,但是不建议使用,会导致无法正确识别云盘容量.(这个问题硬控我1小时,md)
+4.返回根目录运行main.py
+python main.py
+
