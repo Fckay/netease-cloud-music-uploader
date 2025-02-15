@@ -173,7 +173,7 @@ def save_failed_id(song_id):
         f.write(f"{song_id}\n")
 
 # 批量查询歌曲详情并去重
-def batch_get_song_details(song_info_list, cookie, batch_size=900):
+def batch_get_song_details(song_info_list, cookie, batch_size=950):
     all_unique_songs = []
     total_songs = len(song_info_list)
     
@@ -277,8 +277,7 @@ def process_songs(song_info_list, cookie, wait_time=40, upload_interval=0):
         print_with_time(f"正在导入: {song_name} - {artist_name}", 'progress')
         print_with_time(f"进度: {uploaded_count}/{total_songs} | ID: {song_id}", 'info')
         
-        attempts = 0
-        while attempts < 3:
+        while True:
             try:
                 result = import_song(song_info, cookie)
                 if result:
@@ -307,18 +306,14 @@ def process_songs(song_info_list, cookie, wait_time=40, upload_interval=0):
                 else:
                     if all(f['code'] == -100 for f in failed):
                         print_with_time(f"歌曲已存在: {song_name}", 'warning')
-                        save_failed_id(song_id)
                         break
                     else:
-                        print_with_time(f"导入失败: {result}", 'error')
-                attempts += 1
+                        save_failed_id(song_id)
+                        print_with_time(f"导入失败: {result} 跳过当前歌曲", 'error')
+                        break
             except Exception as e:
                 print_with_time(f"未知错误: {str(e)}", 'error')
                 break
-        
-        if attempts == 3:
-            print_with_time(f"跳过歌曲: {song_name} (已重试3次)", 'error')
-            save_failed_id(song_id)
         print_divider("-")
     
     # 上传完成后的统计信息
@@ -336,6 +331,9 @@ def main():
     print_header("网易云音乐云盘导入工具")
     print("正在启动服务...")
     print("请确保已启动 NeteaseCloudMusicApi 服务")
+    print_divider()
+    print("【需要代挂进群联系】")
+    print("【最新版Windows打包版见群文件】GitHub：https://github.com/Fckay/netease-cloud-music-uploader")
     print_divider()
     
     # 尝试读取已保存的 cookie
