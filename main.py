@@ -176,10 +176,9 @@ def save_failed_id(song_id):
         f.write(f"{song_id}\n")
 
 # 批量查询歌曲详情
-def batch_get_song_details(song_info_list, cookie, batch_size=950, max_workers=5):
+def batch_get_song_details(song_info_list, cookie, batch_size=950, max_workers=0):
     all_unique_songs = []
     total_songs = len(song_info_list)
-    result_lock = threading.Lock()
     
     print_with_time(f"\n开始批量查询歌曲详情，共 {total_songs} 首歌曲")
     
@@ -214,22 +213,34 @@ def batch_get_song_details(song_info_list, cookie, batch_size=950, max_workers=5
                     }
                     processed_songs.append(song_info)
         return processed_songs
-    
-    # 使用线程池处理所有批次
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有任务
-        future_to_batch = {executor.submit(process_batch, batch): i for i, batch in enumerate(batches)}
-        
-        # 处理完成的任务
-        for future in as_completed(future_to_batch):
-            batch_index = future_to_batch[future]
+
+    # 根据是否启用多线程选择处理方式
+    if max_workers > 0:
+        result_lock = threading.Lock()
+        # 使用线程池处理所有批次
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_batch = {executor.submit(process_batch, batch): i for i, batch in enumerate(batches)}
+            
+            # 处理完成的任务
+            for future in as_completed(future_to_batch):
+                batch_index = future_to_batch[future]
+                try:
+                    batch_results = future.result()
+                    with result_lock:
+                        all_unique_songs.extend(batch_results)
+                        print_with_time(f"完成第 {batch_index + 1}/{len(batches)} 批处理，当前已获取 {len(all_unique_songs)} 首待上传歌曲")
+                except Exception as e:
+                    print_with_time(f"处理批次 {batch_index + 1} 时发生错误: {str(e)}", 'error')
+    else:
+        # 单线程处理
+        for i, batch in enumerate(batches):
             try:
-                batch_results = future.result()
-                with result_lock:
-                    all_unique_songs.extend(batch_results)
-                    print_with_time(f"完成第 {batch_index + 1}/{len(batches)} 批处理，当前已获取 {len(all_unique_songs)} 首待上传歌曲")
+                batch_results = process_batch(batch)
+                all_unique_songs.extend(batch_results)
+                print_with_time(f"完成第 {i + 1}/{len(batches)} 批处理，当前已获取 {len(all_unique_songs)} 首待上传歌曲")
             except Exception as e:
-                print_with_time(f"处理批次 {batch_index + 1} 时发生错误: {str(e)}", 'error')
+                print_with_time(f"处理批次 {i + 1} 时发生错误: {str(e)}", 'error')
     
     print_with_time(f"\n去重后共有 {len(all_unique_songs)} 首歌曲待上传")
     return all_unique_songs
