@@ -2,6 +2,9 @@ import os
 import json
 import requests
 import time
+import threading
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 导入 login 函数
 from login import login  # 直接从 login.py 导入 login 函数
@@ -53,7 +56,7 @@ def read_cookie():
 
 # 手动输入cookie
 def input_cookie():
-    print("\n请输入cookie（从APP或者客户端获取，否则显示容量不正确）：")
+    print("\n请输入cookie（登录后请检查网盘容量是否正确，推荐扫码登录）：")
     cookie = input().strip()
     if cookie:
         try:
@@ -172,18 +175,23 @@ def save_failed_id(song_id):
     with open("failed_ids.txt", "a") as f:
         f.write(f"{song_id}\n")
 
-# 批量查询歌曲详情并去重
-def batch_get_song_details(song_info_list, cookie, batch_size=950):
+# 批量查询歌曲详情
+def batch_get_song_details(song_info_list, cookie, batch_size=950, max_workers=5):
     all_unique_songs = []
     total_songs = len(song_info_list)
+    result_lock = threading.Lock()
     
     print_with_time(f"\n开始批量查询歌曲详情，共 {total_songs} 首歌曲")
     
-    # 按批次处理歌曲
+    # 将歌曲列表分成多个批次
+    batches = []
     for i in range(0, total_songs, batch_size):
         batch = song_info_list[i:i + batch_size]
+        batches.append(batch)
+    
+    def process_batch(batch):
         song_ids = [song['id'] for song in batch]
-        print_with_time(f"\n处理第 {i+1} 到 {min(i+batch_size, total_songs)} 首歌曲")
+        processed_songs = []
         
         # 查询这一批歌曲的详情
         song_details = get_song_details(song_ids, cookie)
@@ -204,9 +212,24 @@ def batch_get_song_details(song_info_list, cookie, batch_size=950):
                         'bitrate': original_info['bitrate'],
                         'md5': original_info['md5']
                     }
-                    all_unique_songs.append(song_info)
+                    processed_songs.append(song_info)
+        return processed_songs
+    
+    # 使用线程池处理所有批次
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有任务
+        future_to_batch = {executor.submit(process_batch, batch): i for i, batch in enumerate(batches)}
         
-        print_with_time(f"本次重复处理完成，当前已获取 {len(all_unique_songs)} 首待上传歌曲")
+        # 处理完成的任务
+        for future in as_completed(future_to_batch):
+            batch_index = future_to_batch[future]
+            try:
+                batch_results = future.result()
+                with result_lock:
+                    all_unique_songs.extend(batch_results)
+                    print_with_time(f"完成第 {batch_index + 1}/{len(batches)} 批处理，当前已获取 {len(all_unique_songs)} 首待上传歌曲")
+            except Exception as e:
+                print_with_time(f"处理批次 {batch_index + 1} 时发生错误: {str(e)}", 'error')
     
     print_with_time(f"\n去重后共有 {len(all_unique_songs)} 首歌曲待上传")
     return all_unique_songs
@@ -259,6 +282,30 @@ def get_upload_interval():
         except ValueError:
             print_with_time("请输入有效的数字！")
 
+# 添加新函数：获取多线程设置
+def get_thread_settings():
+    while True:
+        use_threads = input("\n是否启用多线程加速查询？(y/n，默认n): ").strip().lower()
+        if not use_threads or use_threads == 'n':
+            return 0
+        elif use_threads == 'y':
+            while True:
+                try:
+                    thread_count = input("\n请输入线程数量（建议1-5，过多可能导致请求被限制）：").strip()
+                    thread_count = int(thread_count)
+                    if thread_count <= 0:
+                        print_with_time("线程数必须大于0！", 'warning')
+                        continue
+                    if thread_count > 5:
+                        confirm = input("警告：线程数过多可能导致请求频繁被限制！！！，是否继续？(y/n): ").strip().lower()
+                        if confirm != 'y':
+                            continue
+                    return thread_count
+                except ValueError:
+                    print_with_time("请输入有效的数字！", 'error')
+        else:
+            print_with_time("无效的输入，请重新选择", 'warning')
+
 # 修改 process_songs 函数
 def process_songs(song_info_list, cookie, wait_time=40, upload_interval=0):
     failed_attempts = {}  # 记录每个 ID 失败的次数
@@ -306,12 +353,17 @@ def process_songs(song_info_list, cookie, wait_time=40, upload_interval=0):
                 else:
                     if all(f['code'] == -100 for f in failed):
                         print_with_time(f"歌曲已存在: {song_name}", 'warning')
+                        print_with_time(f"等待 {upload_interval} 秒...", 'info')
+                        time.sleep(upload_interval)
                         break
                     else:
                         save_failed_id(song_id)
                         print_with_time(f"导入失败: {result} 跳过当前歌曲", 'error')
+                        print_with_time(f"等待 {upload_interval} 秒...", 'info')
+                        time.sleep(upload_interval)
                         break
             except Exception as e:
+                time.sleep(upload_interval)
                 print_with_time(f"未知错误: {str(e)}", 'error')
                 break
         print_divider("-")
@@ -345,7 +397,7 @@ def main():
         get_cloud_info(cookie)
     else:
         print("没有找到有效的cookie，请选择登录方式：")
-        print("1. 扫码登录")
+        print("1. 扫码登录（推荐）")
         print("2. 手动输入cookie")
         
         while True:
@@ -363,6 +415,8 @@ def main():
             elif choice == "2":
                 # 手动输入cookie
                 cookie = input_cookie()
+                if "os=" in cookie:
+                    cookie = cookie + "; " + 'os=pc;appver=3.4;'
                 if cookie:
                     print_with_time("登录成功")
                     get_cloud_info(cookie)
@@ -386,6 +440,14 @@ def main():
         print("上传间隔: 不限制")
     print_divider()
 
+    # 在获取上传间隔后添加多线程设置
+    max_workers = get_thread_settings()
+    if max_workers > 0:
+        print(f"已启用多线程，线程数: {max_workers}")
+    else:
+        print("未启用多线程")
+    print_divider()
+
     # 读取歌曲数据
     songs_data = read_songs_data()
     
@@ -401,10 +463,10 @@ def main():
                 song_info_list = [song for song in song_info_list if str(song['id']) not in uploaded_ids]
                 print(f"过滤后还有 {len(song_info_list)} 首歌曲待上传")
         
-        # 先批量查询歌曲详情并去重
-        unique_songs = batch_get_song_details(song_info_list, cookie)
+        # 先批量查询歌曲详情并去重，传入线程数设置
+        unique_songs = batch_get_song_details(song_info_list, cookie, max_workers=max_workers)
         if unique_songs:
-            # 执行歌曲导入请求，传入用户设置的等待时间和上传间隔
+            # 执行歌曲导入请求
             process_songs(unique_songs, cookie, wait_time, upload_interval)
         else:
             print("没有找到有效的歌曲信息")

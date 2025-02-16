@@ -63,7 +63,7 @@ def login():
         
         if status['code'] == 803:
             print("授权登录成功")
-            cookie = status['cookie']
+            cookie = status['cookie'] + "; " + 'os=pc;appver=3.4;'
             print(f"保存的 Cookie: {cookie}")
             # 保存 cookie 到文件
             with open("cookies.txt", "w") as f:

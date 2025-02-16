@@ -13,7 +13,7 @@ def build_exe():
         '--noconfirm',
         '--onefile',
         '--console',
-        '--name', '网易云音乐云盘导入工具1.0.4',
+        '--name', '网易云音乐云盘导入工具1.0.5',
         'main.py'
     ]
     
