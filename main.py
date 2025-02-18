@@ -156,10 +156,11 @@ def import_song(song_info, cookie):
     bitrate = song_info['bitrate']
     md5 = song_info['md5']
     file_type = song_info['ext']
+    song = song_info['name']
     
     # 构造完整的请求URL和参数
     timestamp = get_current_timestamp()  # 获取当前时间戳
-    url = f"http://localhost:3000/cloud/import?id={song_id}&cookie={cookie}&artist={artist}&album={album}&fileSize={file_size}&bitrate={bitrate}&md5={md5}&fileType={file_type}&time={timestamp}"
+    url = f"http://localhost:3000/cloud/import?id={song_id}&song={song}&cookie={cookie}&artist={artist}&album={album}&fileSize={file_size}&bitrate={bitrate}&md5={md5}&fileType={file_type}&time={timestamp}"
     #print(f"执行导入请求 URL: {url}")
     
     response = requests.get(url)
@@ -346,8 +347,7 @@ def process_songs(song_info_list, cookie, wait_time=40, upload_interval=0):
                     time.sleep(wait_time)
                     continue
                 
-                success_songs = result.get('data', {}).get('successSongs', [])
-                failed = result.get('data', {}).get('failed', [])
+                success_songs = result.get('data', {})
                 
                 if success_songs:
                     uploaded_count += 1
@@ -362,17 +362,11 @@ def process_songs(song_info_list, cookie, wait_time=40, upload_interval=0):
                     print_divider("-")
                     break
                 else:
-                    if all(f['code'] == -100 for f in failed):
-                        print_with_time(f"歌曲已存在: {song_name}", 'warning')
-                        print_with_time(f"等待 {upload_interval} 秒...", 'info')
-                        time.sleep(upload_interval)
-                        break
-                    else:
-                        save_failed_id(song_id)
-                        print_with_time(f"导入失败: {result} 跳过当前歌曲", 'error')
-                        print_with_time(f"等待 {upload_interval} 秒...", 'info')
-                        time.sleep(upload_interval)
-                        break
+                    save_failed_id(song_id)
+                    print_with_time(f"导入失败: {result} 跳过当前歌曲", 'error')
+                    print_with_time(f"等待 {upload_interval} 秒...", 'info')
+                    time.sleep(upload_interval)
+                    break
             except Exception as e:
                 time.sleep(upload_interval)
                 print_with_time(f"未知错误: {str(e)}", 'error')
@@ -389,9 +383,173 @@ def process_songs(song_info_list, cookie, wait_time=40, upload_interval=0):
     print_with_time(f"平均速率: {final_rate:.1f}首/分钟", 'info')
     print_divider()
 
+# 修改删除未知歌曲的函数
+def delete_unknown_songs(cookie, max_workers=0):
+    print_header("网易云盘未知歌曲清理")
+    
+    def fetch_cloud_data(offset):
+        url = f'http://localhost:3000/user/cloud?offset={offset}&limit=30&cookie={cookie}'
+        response = requests.get(url)
+        return response.json()
+    
+    def delete_song(song_id):
+        url = f'http://localhost:3000/user/cloud/del?id={song_id}&cookie={cookie}'
+        response = requests.get(url)
+        data = response.json()
+        if data.get('code') == 200:
+            print_with_time(f'歌曲ID: {song_id} 删除成功', 'success')
+            return True
+        else:
+            print_with_time(f'歌曲ID: {song_id} 删除失败', 'error')
+            return False
+
+    offset = 0
+    has_more = True
+    found_count = 0
+    deleted_count = 0
+    
+    print_with_time("正在扫描并删除未知歌曲...", 'info')
+    
+    while has_more:
+        data = fetch_cloud_data(offset)
+        songs = data.get('data', [])
+        has_more = data.get('hasMore', False)
+        
+        # 收集当前批次的未知歌曲
+        current_batch = []
+        for song in songs:
+            simple_song = song.get('simpleSong', {})
+            name = simple_song.get('name')
+            if not name:
+                song_id = simple_song.get('id')
+                if song_id:
+                    found_count += 1
+                    current_batch.append(song_id)
+        
+        # 删除当前批次的未知歌曲
+        if current_batch:
+            if max_workers > 0:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(delete_song, song_id) for song_id in current_batch]
+                    for future in as_completed(futures):
+                        if future.result():
+                            deleted_count += 1
+            else:
+                for song_id in current_batch:
+                    if delete_song(song_id):
+                        deleted_count += 1
+        
+        # 实时显示进度
+        print(f"\r已发现 {found_count} 首未知歌曲，成功删除 {deleted_count} 首...", end='', flush=True)
+        offset += 30
+    
+    # 扫描完成后换行并显示最终结果
+    print()
+    
+    if found_count == 0:
+        print_with_time("没有发现未知歌曲", 'success')
+        return
+    
+    print_header("清理完成")
+    print_with_time(f"共发现 {found_count} 首未知歌曲", 'info')
+    print_with_time(f"成功删除 {deleted_count} 首歌曲", 'success')
+
+# 修改删除全部歌曲的函数
+def delete_all_songs(cookie, max_workers=0):
+    print_header("删除全部云盘歌曲")
+    confirm = input("警告：此操作将删除云盘中的所有歌曲！确定要继续吗？(y/n): ").lower()
+    if confirm != 'y':
+        print_with_time("操作已取消", 'warning')
+        return
+    
+    def fetch_cloud_data(offset):
+        url = f'http://localhost:3000/user/cloud?offset={offset}&limit=30&cookie={cookie}'
+        response = requests.get(url)
+        return response.json()
+    
+    def delete_song(song_id):
+        url = f'http://localhost:3000/user/cloud/del?id={song_id}&cookie={cookie}'
+        response = requests.get(url)
+        data = response.json()
+        if data.get('code') == 200:
+            print_with_time(f'歌曲ID: {song_id} 删除成功', 'success')
+            return True
+        else:
+            print_with_time(f'歌曲ID: {song_id} 删除失败', 'error')
+            return False
+
+    # 收集所有歌曲ID
+    all_songs = []
+    offset = 0
+    has_more = True
+    
+    print_with_time("正在扫描所有歌曲...", 'info')
+    
+    while has_more:
+        data = fetch_cloud_data(offset)
+        songs = data.get('data', [])
+        has_more = data.get('hasMore', False)
+        
+        for song in songs:
+            simple_song = song.get('simpleSong', {})
+            song_id = simple_song.get('id')
+            if song_id:
+                all_songs.append(song_id)
+        
+        # 实时显示扫描进度，使用\r来覆盖当前行
+        print(f"\r已扫描到 {len(all_songs)} 首歌曲...", end='', flush=True)
+        offset += 30
+    
+    # 扫描完成后换行并显示最终结果
+    print()  # 换行
+    total_songs = len(all_songs)
+    print_with_time(f"共发现 {total_songs} 首歌曲", 'info')
+    
+    if total_songs == 0:
+        print_with_time("云盘中没有歌曲", 'info')
+        return
+    
+    deleted_count = 0
+    
+    if max_workers > 0:
+        print_with_time(f"使用 {max_workers} 个线程进行删除", 'info')
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(delete_song, song_id) for song_id in all_songs]
+            for future in as_completed(futures):
+                if future.result():
+                    deleted_count += 1
+    else:
+        print_with_time("使用单线程进行删除", 'info')
+        for song_id in all_songs:
+            if delete_song(song_id):
+                deleted_count += 1
+    
+    print_header("删除操作完成")
+    print_with_time(f"共计 {total_songs} 首歌曲", 'info')
+    print_with_time(f"成功删除 {deleted_count} 首歌曲", 'success')
+
+# 添加关注作者的函数
+def follow_user(cookie):
+    follow_url = f'http://localhost:3000/follow?id=1833949577&t=1&cookie={cookie}'
+    try:
+        response = requests.get(follow_url)
+        data = response.json()
+        if data.get('code') == 200:
+            print_with_time("关注作者账号成功，cookie有效", 'success')
+            return True
+        elif data.get('code') == 201:
+            print_with_time("已关注作者账号，cookie有效", 'success')
+            return True
+        else:
+            print_with_time("关注作者失败："+response.text, 'warning')
+            return False
+    except Exception as e:
+        print_with_time(f"关注请求出错: {str(e)}", 'error')
+        return False
+
 # 修改 main 函数
 def main():
-    print_header("网易云音乐云盘导入工具")
+    print_header("网易云音乐云盘工具1.1.0")
     print("正在启动服务...")
     print("请确保已启动 NeteaseCloudMusicApi 服务")
     print_divider()
@@ -402,11 +560,7 @@ def main():
     # 尝试读取已保存的 cookie
     cookie = read_cookie()
     
-    if cookie:
-        print("已从cookies.txt文件读取到cookie")
-        # 获取并显示云盘信息
-        get_cloud_info(cookie)
-    else:
+    if not cookie:
         print("没有找到有效的cookie，请选择登录方式：")
         print("1. 扫码登录（推荐）")
         print("2. 手动输入cookie")
@@ -414,22 +568,22 @@ def main():
         while True:
             choice = input("请输入选择（1或2）：").strip()
             if choice == "1":
-                # 执行扫码登录
                 cookie = login()
                 if cookie:
                     print_with_time("扫码登录成功")
+                    follow_user(cookie)  # 添加关注作者
                     get_cloud_info(cookie)
                 else:
                     print_with_time("扫码登录失败")
                     return
                 break
             elif choice == "2":
-                # 手动输入cookie
                 cookie = input_cookie()
                 if "os=" in cookie:
                     cookie = cookie + "; " + 'os=pc;appver=3.4;'
                 if cookie:
                     print_with_time("登录成功")
+                    follow_user(cookie)  # 添加关注作者
                     get_cloud_info(cookie)
                 else:
                     print_with_time("登录失败")
@@ -437,52 +591,69 @@ def main():
                 break
             else:
                 print("无效的选择，请重新输入")
-    
-    # 修改设置提示的输出
-    print_divider()
-    print("用户设置")
-    wait_time = get_wait_time()
-    print(f"频繁限制等待时间: {wait_time}秒")
-    
-    upload_interval = get_upload_interval()
-    if upload_interval > 0:
-        print(f"上传间隔时间: {upload_interval}秒")
     else:
-        print("上传间隔: 不限制")
-    print_divider()
+        print("已从cookies.txt文件读取到cookie")
+        follow_user(cookie)  # 添加关注作者
+        get_cloud_info(cookie)
 
-    # 在获取上传间隔后添加多线程设置
-    max_workers = get_thread_settings()
-    if max_workers > 0:
-        print(f"已启用多线程，线程数: {max_workers}")
-    else:
-        print("未启用多线程")
-    print_divider()
-
-    # 读取歌曲数据
-    songs_data = read_songs_data()
-    
-    if songs_data:
-        song_info_list = get_all_song_info(songs_data)
+    while True:
+        print_divider()
+        print("请选择功能：")
+        print("1. 网易音乐网盘导入")
+        print("2. 网易音乐网盘删除")
+        print("0. 退出程序")
         
-        # 读取已上传的歌曲ID
-        uploaded_ids = read_uploaded_ids()
-        if uploaded_ids:
-            choice = input("\n检测到上次上传的记录，是否继续上次的上传？(y/n): ").lower().strip()
-            if choice == 'y':
-                # 过滤掉已上传的歌曲
-                song_info_list = [song for song in song_info_list if str(song['id']) not in uploaded_ids]
-                print(f"过滤后还有 {len(song_info_list)} 首歌曲待上传")
+        choice = input("请输入选择：").strip()
         
-        # 先批量查询歌曲详情并去重，传入线程数设置
-        unique_songs = batch_get_song_details(song_info_list, cookie, max_workers=max_workers)
-        if unique_songs:
-            # 执行歌曲导入请求
-            process_songs(unique_songs, cookie, wait_time, upload_interval)
+        if choice == "1":
+            # 原有的导入功能代码
+            wait_time = get_wait_time()
+            upload_interval = get_upload_interval()
+            max_workers = get_thread_settings()
+            songs_data = read_songs_data()
+            
+            if songs_data:
+                song_info_list = get_all_song_info(songs_data)
+                uploaded_ids = read_uploaded_ids()
+                if uploaded_ids:
+                    if input("\n检测到上次上传的记录，是否继续上次的上传？(y/n): ").lower().strip() == 'y':
+                        song_info_list = [song for song in song_info_list if str(song['id']) not in uploaded_ids]
+                        print(f"过滤后还有 {len(song_info_list)} 首歌曲待上传")
+                
+                unique_songs = batch_get_song_details(song_info_list, cookie, max_workers=max_workers)
+                if unique_songs:
+                    process_songs(unique_songs, cookie, wait_time, upload_interval)
+                else:
+                    print("没有找到有效的歌曲信息")
+            
+        elif choice == "2":
+            while True:
+                print_divider()
+                print("删除功能：")
+                print("1. 删除未知歌曲")
+                print("2. 删除全部歌曲")
+                print("0. 返回上级菜单")
+                
+                sub_choice = input("请输入选择：").strip()
+                
+                if sub_choice in ["1", "2"]:
+                    max_workers = get_thread_settings()  # 复用之前的线程设置函数
+                    if sub_choice == "1":
+                        delete_unknown_songs(cookie, max_workers)
+                    else:
+                        delete_all_songs(cookie, max_workers)
+                    break
+                elif sub_choice == "0":
+                    break
+                else:
+                    print_with_time("无效的选择，请重新输入", 'warning')
+        
+        elif choice == "0":
+            print_with_time("程序已退出", 'info')
+            break
+        
         else:
-            print("没有找到有效的歌曲信息")
-    else:
-        print("没有找到任何歌曲数据")
+            print_with_time("无效的选择，请重新输入", 'warning')
 
 if __name__ == "__main__":
     try:
