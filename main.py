@@ -397,7 +397,6 @@ def delete_unknown_songs(cookie, max_workers=0):
         response = requests.get(url)
         data = response.json()
         if data.get('code') == 200:
-            print_with_time(f'歌曲ID: {song_id} 删除成功', 'success')
             return True
         else:
             print_with_time(f'歌曲ID: {song_id} 删除失败', 'error')
@@ -405,7 +404,10 @@ def delete_unknown_songs(cookie, max_workers=0):
 
     offset = 0
     has_more = True
+    # 扫描到的歌曲数量
     found_count = 0
+    # 扫描到的未知歌曲数量
+    found_unknown_count = 0
     deleted_count = 0
     
     print_with_time("正在扫描并删除未知歌曲...", 'info')
@@ -420,11 +422,12 @@ def delete_unknown_songs(cookie, max_workers=0):
         for song in songs:
             simple_song = song.get('simpleSong', {})
             name = simple_song.get('name')
-            if not name:
+            if not name or name == '' or '未知' in name:
                 song_id = simple_song.get('id')
                 if song_id:
-                    found_count += 1
+                    found_unknown_count += 1
                     current_batch.append(song_id)
+            found_count += 1
         
         # 删除当前批次的未知歌曲
         if current_batch:
@@ -440,18 +443,18 @@ def delete_unknown_songs(cookie, max_workers=0):
                         deleted_count += 1
         
         # 实时显示进度
-        print(f"\r已发现 {found_count} 首未知歌曲，成功删除 {deleted_count} 首...", end='', flush=True)
+        print(f"\r已发现 {found_count} 首歌曲, 未知歌曲 {found_unknown_count} 首，成功删除 {deleted_count} 首...", end='', flush=True)
         offset += 30
     
     # 扫描完成后换行并显示最终结果
     print()
     
-    if found_count == 0:
+    if found_unknown_count == 0:
         print_with_time("没有发现未知歌曲", 'success')
         return
     
     print_header("清理完成")
-    print_with_time(f"共发现 {found_count} 首未知歌曲", 'info')
+    print_with_time(f"共发现 {found_unknown_count} 首未知歌曲", 'info')
     print_with_time(f"成功删除 {deleted_count} 首歌曲", 'success')
 
 # 修改删除全部歌曲的函数
@@ -472,60 +475,59 @@ def delete_all_songs(cookie, max_workers=0):
         response = requests.get(url)
         data = response.json()
         if data.get('code') == 200:
-            print_with_time(f'歌曲ID: {song_id} 删除成功', 'success')
             return True
         else:
             print_with_time(f'歌曲ID: {song_id} 删除失败', 'error')
             return False
 
-    # 收集所有歌曲ID
-    all_songs = []
     offset = 0
     has_more = True
+    # 扫描到的歌曲数量
+    found_count = 0
+    deleted_count = 0
     
-    print_with_time("正在扫描所有歌曲...", 'info')
+    print_with_time("正在扫描并删除所有歌曲...", 'info')
     
     while has_more:
         data = fetch_cloud_data(offset)
         songs = data.get('data', [])
         has_more = data.get('hasMore', False)
         
+        # 收集当前批次的歌曲
+        current_batch = []
         for song in songs:
             simple_song = song.get('simpleSong', {})
             song_id = simple_song.get('id')
             if song_id:
-                all_songs.append(song_id)
+                found_count += 1
+                current_batch.append(song_id)
         
-        # 实时显示扫描进度，使用\r来覆盖当前行
-        print(f"\r已扫描到 {len(all_songs)} 首歌曲...", end='', flush=True)
+        # 删除当前批次的歌曲
+        if current_batch:
+            if max_workers > 0:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(delete_song, song_id) for song_id in current_batch]
+                    for future in as_completed(futures):
+                        if future.result():
+                            deleted_count += 1
+            else:
+                for song_id in current_batch:
+                    if delete_song(song_id):
+                        deleted_count += 1
+        
+        # 实时显示进度
+        print(f"\r已扫描到 {found_count} 首歌曲，成功删除 {deleted_count} 首...", end='', flush=True)
         offset += 30
     
     # 扫描完成后换行并显示最终结果
-    print()  # 换行
-    total_songs = len(all_songs)
-    print_with_time(f"共发现 {total_songs} 首歌曲", 'info')
+    print()
     
-    if total_songs == 0:
+    if found_count == 0:
         print_with_time("云盘中没有歌曲", 'info')
         return
     
-    deleted_count = 0
-    
-    if max_workers > 0:
-        print_with_time(f"使用 {max_workers} 个线程进行删除", 'info')
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(delete_song, song_id) for song_id in all_songs]
-            for future in as_completed(futures):
-                if future.result():
-                    deleted_count += 1
-    else:
-        print_with_time("使用单线程进行删除", 'info')
-        for song_id in all_songs:
-            if delete_song(song_id):
-                deleted_count += 1
-    
     print_header("删除操作完成")
-    print_with_time(f"共计 {total_songs} 首歌曲", 'info')
+    print_with_time(f"共发现 {found_count} 首歌曲", 'info')
     print_with_time(f"成功删除 {deleted_count} 首歌曲", 'success')
 
 # 添加关注作者的函数
